@@ -1,26 +1,30 @@
 # AGENTS.md — Auth & Identity Service
 
+> **AI Agent Instruction File**
+> This document is the authoritative scaffold specification for the Auth & Identity Service. Read it completely before writing a single line of code.
+
+---
+
 ## 1. Stack
 
 | Technology | Role |
 |---|---|
 | **Node.js 20 LTS** | Runtime |
-| **NestJS 10 (TypeScript 5)** | Application framework — modules, DI, guards, interceptors, pipes |
-| **Passport.js** | Authentication middleware — `passport-local`, `passport-google-oauth20`, `passport-microsoft`, `passport-oauth2`, `openid-client` (PKCE) |
-| **jsonwebtoken** | JWT signing/verification (RS256 asymmetric) |
-| **jwks-rsa** | JWKS endpoint key fetching and key rotation support |
-| **argon2** | Primary password hashing (fallback migration path from bcrypt) |
-| **bcrypt** | Legacy hash comparison during migration |
-| **PostgreSQL 15** | Primary store — users, roles, organizations, refresh tokens |
-| **TypeORM 0.3** | ORM — entities, migrations, repositories |
-| **Redis 7** | Token blacklist (TTL-matched), RBAC permission cache (5-min TTL) |
+| **NestJS 10 (TypeScript 5)** | Application framework — modules, guards, interceptors, pipes |
+| **Passport.js** | Authentication middleware — `passport-jwt`, `passport-google-oidc`, `passport-microsoft` |
+| **jsonwebtoken (RS256)** | JWT issuance and verification using asymmetric RSA key pairs |
+| **argon2** | Password hashing (primary); bcrypt retained only for legacy migration path |
+| **PostgreSQL 15** | Persistent store — users, roles, organizations, refresh tokens |
+| **TypeORM 0.3** | ORM with migration support; entities use decorators |
+| **Redis 7** | Token blacklist (SET with TTL matching JWT expiry) and RBAC permission cache (5-min TTL) |
 | **ioredis** | Redis client |
-| **class-validator / class-transformer** | DTO validation and transformation |
-| **Winston + nest-winston** | Structured JSON logging for security audit events |
-| **Helmet** | HTTP security headers |
-| **rate-limiter-flexible** | Per-IP and per-user brute-force protection |
-| **Jest + Supertest** | Unit and e2e testing |
-| **Docker / docker-compose** | Local development and CI environment |
+| **class-validator / class-transformer** | DTO validation and serialization |
+| **@nestjs/config** | Environment-based configuration with Joi schema validation |
+| **@nestjs/throttler** | Rate limiting on auth endpoints |
+| **@nestjs/swagger** | OpenAPI documentation generation |
+| **winston + nest-winston** | Structured JSON logging for security audit trail |
+| **Jest + Supertest** | Unit and integration testing |
+| **Docker / docker-compose** | Containerised local development and CI |
 | **GitHub Actions** | CI pipeline |
 
 ---
@@ -31,120 +35,131 @@
 auth-service/
 ├── AGENTS.md                          # This file
 ├── tasks.md                           # Agent-generated task checklist (created before coding)
-├── .env.example                       # All required env vars documented, no secrets
-├── .env                               # Local secrets — never committed
-├── .eslintrc.js                       # ESLint config (airbnb-typescript + prettier)
-├── .prettierrc                        # Prettier config
-├── tsconfig.json                      # Base TypeScript config (strict: true)
-├── tsconfig.build.json                # Build config (excludes tests)
-├── jest.config.ts                     # Jest config — unit + e2e projects
+├── .env.example                       # All required env vars with placeholder values
+├── .env.test                          # Test-specific env overrides (no secrets)
+├── .eslintrc.js                       # ESLint config (Airbnb-TypeScript + NestJS rules)
+├── .prettierrc                        # Prettier config (singleQuote, trailingComma: all)
+├── jest.config.ts                     # Root Jest config — unit + integration projects
+├── tsconfig.json                      # Base TS config (strict: true, decoratorMetadata: true)
+├── tsconfig.build.json                # Extends base, excludes test files
 ├── package.json
 ├── Dockerfile                         # Multi-stage production image
-├── docker-compose.yml                 # Local dev: app + postgres + redis
-├── docker-compose.test.yml            # CI: ephemeral postgres + redis
+├── Dockerfile.dev                     # Dev image with hot-reload (ts-node-dev)
+├── docker-compose.yml                 # Service + postgres + redis for local dev
+├── docker-compose.test.yml            # Isolated test environment
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                     # Lint → test → build → scan pipeline
-├── keys/
-│   ├── private.pem                    # RS256 private key (gitignored; injected via secret)
-│   └── public.pem                     # RS256 public key (gitignored; injected via secret)
-├── migrations/                        # TypeORM migration files (auto-named timestamps)
-│   └── .gitkeep
+│       └── ci.yml                     # Lint → test → build → security scan
+├── keys/                              # RSA key pair (gitignored; generated by bootstrap script)
+│   ├── private.pem
+│   └── public.pem
+├── scripts/
+│   ├── generate-keys.sh               # Generates RS256 RSA-2048 key pair into keys/
+│   └── seed.ts                        # Dev database seed (roles, default org, admin user)
 ├── src/
-│   ├── main.ts                        # Bootstrap: Helmet, global pipes, Swagger, CORS
+│   ├── main.ts                        # Bootstrap: Fastify adapter, global pipes, Swagger, shutdown hooks
 │   ├── app.module.ts                  # Root module — imports all feature modules
 │   ├── config/
-│   │   ├── app.config.ts              # NestJS ConfigModule schema (Joi validation)
-│   │   ├── database.config.ts         # TypeORM DataSource options factory
-│   │   ├── redis.config.ts            # ioredis connection options factory
-│   │   └── jwt.config.ts             # RS256 key loading, token TTLs
+│   │   ├── configuration.ts           # Returns typed config object from process.env
+│   │   ├── config.schema.ts           # Joi validation schema for all env vars
+│   │   └── config.types.ts            # TypeScript interfaces for config sections
 │   ├── common/
 │   │   ├── decorators/
-│   │   │   ├── current-user.decorator.ts   # @CurrentUser() param decorator
-│   │   │   ├── roles.decorator.ts          # @Roles(...) metadata decorator
-│   │   │   └── public.decorator.ts         # @Public() bypass guard decorator
+│   │   │   ├── current-user.decorator.ts     # @CurrentUser() param decorator
+│   │   │   ├── roles.decorator.ts            # @Roles(...) metadata decorator
+│   │   │   └── organization.decorator.ts     # @OrgId() param decorator
 │   │   ├── filters/
-│   │   │   └── http-exception.filter.ts    # Global error response shaping
+│   │   │   └── http-exception.filter.ts      # Normalised error response shape
 │   │   ├── guards/
-│   │   │   ├── jwt-auth.guard.ts           # Global JWT guard (checks blacklist)
-│   │   │   └── roles.guard.ts              # RBAC guard using cached permissions
+│   │   │   ├── jwt-auth.guard.ts             # Validates access token; checks Redis blacklist
+│   │   │   ├── roles.guard.ts                # RBAC enforcement using cached permissions
+│   │   │   └── throttler.guard.ts            # Extends NestJS ThrottlerGuard
 │   │   ├── interceptors/
-│   │   │   └── audit-log.interceptor.ts    # Logs auth events via Winston
+│   │   │   ├── audit-log.interceptor.ts      # Logs auth events to winston audit logger
+│   │   │   └── transform.interceptor.ts      # Wraps responses in { data, meta } envelope
 │   │   ├── pipes/
-│   │   │   └── validation.pipe.ts          # Global class-validator pipe
-│   │   └── types/
-│   │       ├── jwt-payload.interface.ts    # { sub, email, orgId, roles, jti, iat, exp }
-│   │       └── request-with-user.interface.ts
+│   │   │   └── zod-validation.pipe.ts        # Alternative strict validation pipe
+│   │   └── utils/
+│   │       ├── crypto.util.ts                # Token hashing helpers (SHA-256 for refresh token storage)
+│   │       └── pagination.util.ts            # Cursor/offset pagination helpers
 │   ├── database/
-│   │   ├── database.module.ts         # TypeORM forRootAsync
-│   │   └── data-source.ts             # Standalone DataSource for CLI migrations
+│   │   ├── database.module.ts         # TypeORM async module with config injection
+│   │   ├── migrations/                # TypeORM migration files (numbered, timestamped)
+│   │   │   └── 1700000000000-InitSchema.ts
+│   │   └── seeds/                     # Seed data classes
 │   ├── redis/
-│   │   ├── redis.module.ts            # Global ioredis provider
-│   │   └── redis.service.ts           # get/set/del/ttl wrappers
-│   ├── users/
-│   │   ├── users.module.ts
-│   │   ├── users.controller.ts        # Profile CRUD, org-admin user management
-│   │   ├── users.service.ts           # Business logic — create, find, update, deactivate
-│   │   ├── users.repository.ts        # TypeORM custom repository
-│   │   ├── entities/
-│   │   │   └── user.entity.ts         # id, email, passwordHash, orgId, isActive, createdAt
-│   │   └── dto/
-│   │       ├── create-user.dto.ts
-│   │       ├── update-profile.dto.ts
-│   │       └── user-response.dto.ts   # Excludes passwordHash via @Exclude()
-│   ├── organizations/
-│   │   ├── organizations.module.ts
-│   │   ├── organizations.controller.ts
-│   │   ├── organizations.service.ts
-│   │   ├── entities/
-│   │   │   └── organization.entity.ts # id, name, domain, createdAt
-│   │   └── dto/
-│   │       ├── create-organization.dto.ts
-│   │       └── organization-response.dto.ts
-│   ├── roles/
-│   │   ├── roles.module.ts
-│   │   ├── roles.service.ts           # Assign/revoke roles, permission lookup
-│   │   ├── roles.repository.ts
-│   │   ├── entities/
-│   │   │   ├── role.entity.ts         # id, name (Admin|Manager|Member|Viewer), orgId
-│   │   │   └── user-role.entity.ts    # userId, roleId, orgId — scoped assignment
-│   │   └── constants/
-│   │       └── roles.enum.ts          # export enum Role { Admin, Manager, Member, Viewer }
+│   │   ├── redis.module.ts            # Global ioredis module
+│   │   ├── redis.service.ts           # Typed wrappers: blacklist, permissionCache
+│   │   └── redis.constants.ts        # Key prefix constants
 │   ├── auth/
-│   │   ├── auth.module.ts             # Imports PassportModule, JwtModule, strategies
-│   │   ├── auth.controller.ts         # /auth/* endpoints
-│   │   ├── auth.service.ts            # Orchestrates login, register, refresh, revoke
-│   │   ├── token/
-│   │   │   ├── token.service.ts       # Issue access/refresh tokens, rotation, blacklist
-│   │   │   └── refresh-token.entity.ts # id, userId, jti, expiresAt, revokedAt
+│   │   ├── auth.module.ts
+│   │   ├── auth.controller.ts         # POST /auth/register, /auth/login, /auth/logout, /auth/refresh
+│   │   ├── auth.service.ts            # Orchestrates registration, login, token lifecycle
+│   │   ├── auth.types.ts              # TokenPair, JwtPayload, AuthResult interfaces
 │   │   ├── strategies/
-│   │   │   ├── local.strategy.ts      # passport-local — email + argon2 verify
-│   │   │   ├── jwt.strategy.ts        # passport-jwt — RS256, checks Redis blacklist
-│   │   │   ├── google.strategy.ts     # passport-google-oauth20 — OIDC
-│   │   │   └── microsoft.strategy.ts  # openid-client — PKCE, Azure AD
+│   │   │   ├── jwt.strategy.ts        # Passport JWT strategy — RS256, blacklist check
+│   │   │   ├── local.strategy.ts      # Passport local strategy — email + argon2 verify
+│   │   │   ├── google-oidc.strategy.ts  # Passport Google OIDC with PKCE support
+│   │   │   └── microsoft-oidc.strategy.ts # Passport Microsoft OIDC with PKCE support
 │   │   ├── dto/
 │   │   │   ├── register.dto.ts
 │   │   │   ├── login.dto.ts
 │   │   │   ├── refresh-token.dto.ts
-│   │   │   └── token-response.dto.ts  # { accessToken, refreshToken, expiresIn }
-│   │   └── events/
-│   │       └── auth-event.enum.ts     # LOGIN, LOGOUT, REGISTER, REFRESH, SSO_LOGIN, REVOKE
-│   ├── jwks/
-│   │   ├── jwks.module.ts
+│   │   │   └── sso-callback.dto.ts
+│   │   └── __tests__/
+│   │       ├── auth.service.spec.ts
+│   │       ├── auth.controller.spec.ts
+│   │       └── auth.integration.spec.ts
+│   ├── tokens/
+│   │   ├── tokens.module.ts
+│   │   ├── tokens.service.ts          # JWT sign/verify, refresh token rotation, JWKS construction
 │   │   ├── jwks.controller.ts         # GET /.well-known/jwks.json
-│   │   └── jwks.service.ts            # Builds JWK set from public.pem, handles rotation
+│   │   ├── entities/
+│   │   │   └── refresh-token.entity.ts  # Stores SHA-256 hash of token, expiry, org, user
+│   │   └── __tests__/
+│   │       ├── tokens.service.spec.ts
+│   │       └── jwks.controller.spec.ts
+│   ├── users/
+│   │   ├── users.module.ts
+│   │   ├── users.service.ts           # CRUD, password change, profile updates
+│   │   ├── users.controller.ts        # GET/PATCH /users/me, GET /users/:id (admin)
+│   │   ├── entities/
+│   │   │   └── user.entity.ts         # id, email, passwordHash, orgId, isActive, ssoProvider
+│   │   ├── dto/
+│   │   │   ├── create-user.dto.ts
+│   │   │   ├── update-profile.dto.ts
+│   │   │   └── user-response.dto.ts   # Excludes passwordHash via @Exclude()
+│   │   └── __tests__/
+│   │       ├── users.service.spec.ts
+│   │       └── users.controller.spec.ts
+│   ├── roles/
+│   │   ├── roles.module.ts
+│   │   ├── roles.service.ts           # Role assignment, permission lookup with Redis cache
+│   │   ├── roles.controller.ts        # Admin-only role management endpoints
+│   │   ├── entities/
+│   │   │   ├── role.entity.ts         # id, name (Admin|Manager|Member|Viewer), orgId
+│   │   │   ├── permission.entity.ts   # id, resource, action
+│   │   │   └── user-role.entity.ts    # userId, roleId, orgId (composite PK)
+│   │   ├── constants/
+│   │   │   └── roles.constants.ts     # ROLES enum, PERMISSIONS map
+│   │   └── __tests__/
+│   │       └── roles.service.spec.ts
+│   ├── organizations/
+│   │   ├── organizations.module.ts
+│   │   ├── organizations.service.ts   # Org creation, member management, scoped queries
+│   │   ├── organizations.controller.ts
+│   │   ├── entities/
+│   │   │   └── organization.entity.ts # id, name, slug, settings (JSONB)
+│   │   └── __tests__/
+│   │       └── organizations.service.spec.ts
 │   └── health/
 │       ├── health.module.ts
-│       └── health.controller.ts       # GET /health — DB + Redis liveness
+│       └── health.controller.ts       # GET /health — Terminus checks for PG + Redis
 └── test/
-    ├── jest-e2e.config.ts
-    ├── app.e2e-spec.ts                # Full auth flow e2e
-    ├── auth/
-    │   ├── auth.e2e-spec.ts           # Register → login → refresh → revoke
-    │   └── sso.e2e-spec.ts            # Google/Microsoft OAuth mock flows
-    └── fixtures/
-        ├── user.fixture.ts
-        └── organization.fixture.ts
+    ├── jest-e2e.config.ts             # E2E Jest project config
+    ├── setup.ts                       # Global test setup: DB migrations, Redis flush
+    ├── teardown.ts                    # Global teardown
+    └── app.e2e-spec.ts                # Full HTTP flow tests via Supertest
 ```
 
 ---
@@ -153,126 +168,128 @@ auth-service/
 
 The agent **must** follow these steps in order. Do not skip or reorder.
 
-### Step 1 — Read All Specifications
-- Read this `AGENTS.md` in full before writing any code.
-- Read any linked story files or acceptance criteria documents.
-- Identify all ambiguities; resolve them using the constraints in Section 7 before proceeding.
+### Step 1 — Read and Understand
+1. Read this `AGENTS.md` file in full before any action.
+2. Read all story-level spec files provided in the task context.
+3. Identify every acceptance criterion, edge case, and constraint.
 
 ### Step 2 — Create `tasks.md`
-Create `tasks.md` at the project root with a checkbox list derived from the spec. Example structure:
-
+Create `tasks.md` in the project root. Structure it as:
 ```markdown
-# tasks.md
-## Setup
-- [ ] Initialise NestJS project with `nest new`
-- [ ] Configure TypeScript strict mode
-- [ ] Add all dependencies from stack table
+# Task Checklist — Auth & Identity Service
 
-## Entities & Migrations
-- [ ] Create User entity + migration
-- [ ] Create Organization entity + migration
-- [ ] Create Role / UserRole entities + migration
-- [ ] Create RefreshToken entity + migration
+## Phase 1: Scaffold
+- [ ] Initialise NestJS project with `nest new` (Fastify adapter)
+- [ ] Install all dependencies from Stack section
+- [ ] Generate RSA key pair via scripts/generate-keys.sh
+- [ ] Configure .env.example with all variables
+...
 
-## Feature Modules
-- [ ] Config module with Joi schema validation
-- [ ] Redis module (global)
-- [ ] Users module (CRUD + profile)
-- [ ] Organizations module
-- [ ] Roles module with Redis caching
-- [ ] Auth module (local strategy, JWT, refresh rotation)
-- [ ] SSO strategies (Google, Microsoft, PKCE)
-- [ ] JWKS endpoint
-- [ ] Health endpoint
+## Phase 2: Core Implementation
+...
 
-## Security & Cross-Cutting
-- [ ] Global JWT guard with blacklist check
-- [ ] RBAC guard using cached permissions
-- [ ] Audit log interceptor (all auth events)
-- [ ] Rate limiter (login, register endpoints)
-- [ ] Helmet + CORS configuration
+## Phase 3: Tests
+...
 
-## Testing
-- [ ] Unit tests ≥ 90% coverage for all services
-- [ ] E2E tests for full auth flows
+## Phase 4: Docker & CI
+...
 
-## Docker & CI
-- [ ] Dockerfile (multi-stage)
-- [ ] docker-compose.yml
-- [ ] GitHub Actions ci.yml
+## Phase 5: Validation
+...
+```
+Check off items (`[x]`) as you complete them. Commit `tasks.md` updates separately.
+
+### Step 3 — Environment & Configuration
+1. Create `.env.example` with every variable required (see Constraints §7 for the required list).
+2. Implement `src/config/configuration.ts` returning a validated typed config using Joi (`config.schema.ts`).
+3. Ensure the app **refuses to start** if any required env var is missing or invalid.
+
+### Step 4 — Database & Migrations
+1. Define all TypeORM entities before writing services.
+2. Generate the initial migration: `npx typeorm migration:generate -n InitSchema`.
+3. Migrations must be **run programmatically** on startup in non-production, and via CLI command in production.
+4. Never use `synchronize: true` in any environment.
+
+### Step 5 — Core Feature Implementation Order
+Implement modules in this dependency order:
+1. `redis` module (no dependencies)
+2. `database` module (no dependencies)
+3. `organizations` module
+4. `users` module (depends on organizations)
+5. `roles` module (depends on users, organizations)
+6. `tokens` module (depends on users, redis)
+7. `auth` module (depends on all above)
+8. `health` module (depends on database, redis)
+
+### Step 6 — Security-Critical Implementations
+These must be implemented exactly as specified — no shortcuts:
+
+**Password Hashing**
+```typescript
+// Always use argon2 with these parameters
+import * as argon2 from 'argon2';
+const hash = await argon2.hash(password, {
+  type: argon2.argon2id,
+  memoryCost: 65536,  // 64 MB
+  timeCost: 3,
+  parallelism: 4,
+});
 ```
 
-Tick each checkbox (`[x]`) as tasks are completed.
-
-### Step 3 — Implement in Dependency Order
-1. Project bootstrap (`nest new`, tsconfig, eslint, prettier)
-2. Config module → Database module → Redis module
-3. Entities → generate and run migrations
-4. Users module → Organizations module → Roles module
-5. Token service → Auth strategies → Auth module
-6. JWKS module → Health module
-7. Guards, interceptors, filters (global registration in `main.ts`)
-8. Rate limiting, Helmet, CORS in `main.ts`
-
-### Step 4 — Write Tests Alongside Each Module
-- Write unit tests immediately after each service/guard/strategy is implemented.
-- Do not batch all tests at the end.
-- Run `jest --coverage` after each module; fix failures before moving on.
-
-### Step 5 — Validate
-```bash
-npm run lint          # Zero ESLint errors
-npm run test          # All unit tests pass, ≥ 90% coverage
-npm run test:e2e      # All e2e tests pass against docker-compose.test.yml
-npm run build         # tsc compiles with zero errors
-docker build -t auth-service:local .   # Image builds successfully
+**JWT Issuance (RS256)**
+```typescript
+// Access token: 15-minute expiry
+// Payload must include: sub (userId), email, orgId, roles[], jti (UUID v4)
+// Sign with private key loaded from config — never hardcoded
 ```
 
-Only mark a task complete after all five commands succeed.
+**Refresh Token Rotation**
+```typescript
+// 1. Generate cryptographically random token (crypto.randomBytes(64).toString('hex'))
+// 2. Store SHA-256 hash in DB (never plaintext)
+// 3. On use: invalidate old token, issue new token (rotation)
+// 4. Detect reuse: if already-used token presented, revoke entire family
+```
 
----
+**Token Blacklisting**
+```typescript
+// On logout/revoke: SET blacklist:<jti> "1" EX <remaining_ttl_seconds>
+// jwt-auth.guard must check blacklist BEFORE returning 200
+```
 
-## 4. Coding Conventions
+**RBAC Permission Cache**
+```typescript
+// Key: rbac:<orgId>:<userId>
+// Value: JSON-serialised permissions array
+// TTL: 300 seconds (5 minutes)
+// On role change: DELETE key immediately
+```
 
-### General
-- **TypeScript strict mode** (`strict: true`, `noImplicitAny`, `strictNullChecks`). No `any` types — use `unknown` and narrow explicitly.
-- All files use **named exports** only; no default exports.
-- One class per file. File name matches class name in kebab-case: `token.service.ts` → `TokenService`.
+### Step 7 — JWKS Endpoint
+1. Expose `GET /.well-known/jwks.json` — no authentication required.
+2. Return the public key in JWK format using `jose` library.
+3. Support key rotation: maintain current + previous key in JWKS response.
+4. Cache JWKS response with `Cache-Control: public, max-age=3600`.
 
-### NestJS Patterns
-- Every feature is a **self-contained NestJS module**. Cross-module communication only via injected services, never direct entity access across modules.
-- Use `forRootAsync` / `forFeatureAsync` with factory functions for all dynamic modules (TypeORM, Redis, JWT).
-- **Never** put business logic in controllers. Controllers validate input (DTO pipes), call one service method, return the result.
-- Use `@UseGuards(JwtAuthGuard, RolesGuard)` explicitly on controller methods that require RBAC. The global `JwtAuthGuard` can be bypassed with `@Public()`.
-- All controller responses must use typed response DTOs with `@Exclude()` on sensitive fields and `ClassSerializerInterceptor` globally enabled.
+### Step 8 — SSO Integration
+1. Register Google and Microsoft OIDC strategies in `auth.module.ts`.
+2. PKCE (`code_challenge_method=S256`) must be enabled for mobile flows.
+3. On SSO callback: upsert user by email+provider, assign default `Member` role if new.
+4. Issue the same JWT access/refresh token pair as local login — SSO is transparent to consumers.
+5. Log SSO login events via `audit-log.interceptor.ts`.
 
-### Naming Conventions
-| Artefact | Convention | Example |
-|---|---|---|
-| Files | kebab-case | `auth.service.ts` |
-| Classes | PascalCase | `AuthService` |
-| Interfaces | PascalCase + `Interface` suffix | `JwtPayloadInterface` |
-| Enums | PascalCase | `Role`, `AuthEvent` |
-| Constants | SCREAMING_SNAKE_CASE | `ACCESS_TOKEN_TTL` |
-| Env vars | SCREAMING_SNAKE_CASE | `JWT_PRIVATE_KEY_PATH` |
-| DB columns | snake_case (TypeORM `@Column({ name: 'column_name' })`) | `created_at` |
-| REST routes | kebab-case, plural nouns | `/auth/refresh-token` |
+### Step 9 — Write Tests (before marking implementation complete)
+See §5 Testing for full requirements. Tests must pass before proceeding.
 
-### Security Patterns
-- **Never** log raw passwords, tokens, or PII. Log only `userId`, `orgId`, `jti`, event type, and timestamp.
-- Access tokens: RS256, 15-minute TTL, claims `{ sub, email, orgId, roles, jti }`.
-- Refresh tokens: stored as hashed value (argon2) in PostgreSQL with `jti`, `expiresAt`, `revokedAt`.
-- On refresh: verify stored token → issue new pair → immediately revoke old `jti` in Redis blacklist AND mark DB record `revokedAt`.
-- JWKS key rotation: support at least two simultaneous public keys (`kid` header). Old key retained for `accessTokenTTL` duration after rotation.
-- All argon2 hashing uses `argon2.hash(password, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 })`.
-- PKCE (`code_challenge_method=S256`) enforced for all mobile OAuth flows via `openid-client`.
+### Step 10 — Docker & CI
+Implement Dockerfile, docker-compose files, and GitHub Actions workflow per §6.
 
-### Database
-- All schema changes via **TypeORM migrations only**. Never use `synchronize: true` in any environment.
-- Entities use UUIDs (`@PrimaryGeneratedColumn('uuid')`).
-- Soft deletes via `@DeleteDateColumn()` on User and Organization entities.
-- All foreign keys have explicit `onDelete` behaviour defined.
-- Index all columns used in `WHERE` clauses: `user.email`, `user.orgId`, `refresh_token.jti`, `user_role.userId`.
-
-### Redis Usage
-- Blacklist key pattern: `blacklist:jti:{jti}
+### Step 11 — Validation Checklist
+Before declaring the service complete, verify:
+- [ ] `npm run lint` — zero errors
+- [ ] `npm run test` — all pass, ≥90% coverage
+- [ ] `npm run test:e2e` — all pass
+- [ ] `docker build -t auth-service .` — succeeds, image <200 MB
+- [ ] `docker-compose up` — all services healthy
+- [ ] `GET /.well-known/jwks.json` returns valid JWKS
+- [ ] `GET /health` returns 200 with PG +
